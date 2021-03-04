@@ -1,0 +1,365 @@
+// ************HYDROPONICS 1.0 *********************
+// author: Marco Heinzen
+//licencing: prototype, for private use only !
+
+// Libraries
+#include <dht11.h> //this is for the temp and humidity sensor
+#include <Wire.h>
+#include "RTClib.h"
+#include <DateTime.h>
+//#include <RTClib.h>
+
+// constants won't change. They're used here to
+// set relays numbers:
+#define PumpeA_Relais1 2    // Pumpe Aquarium auf Relais 1
+#define PumpeK_Relais2 3    // Pumpe Kreislauf auf Relais 2
+#define LichtA_Relais3  4    // Licht Aquarium auf Relais 3
+#define HeizstabA_Relais4 5  // Heizstab Aquarium auf Relais 4
+
+// set pin numbers of button:
+#define  buttonKP 6   // the number of the pushbutton pin
+
+// Watering time:
+const int WateringTime = 17000;
+const long FlowbackTime = 110000L;
+
+// variables will change:
+int buttonStateKP = 0;         // variable for reading the pushbutton status
+
+/*
+ 
+  Scripts used:
+  Thermistor Code for Temperature
+  
+  ElCheapo Arduino EC-PPM measurments (Temp via Thermistor)
+ 
+ 
+  This scrip uses a common USA two prong plug and a 47Kohm Resistor to measure the EC/PPM of a Aquaponics/Hydroponics Sytem.
+  You could modift this code to Measure other liquids if you change the resitor and values at the top of the code.
+ 
+  This Program will give you a temperature based feed controller. See Read me in download file for more info.
+ 
+  28/8/2015  Michael Ratcliffe  Mike@MichaelRatcliffe.com
+ 
+ 
+          This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+ 
+ 
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+ 
+ 
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see .
+ 
+    Parts:
+    -Arduino - Uno/Mega
+    -Standard American two prong plug
+    -1 kohm resistor
+    -DS18B20 Waterproof Temperature Sensor
+ 
+    Limitations:
+    -
+    -
+ 
+    See www.MichaelRatcliffe.com/Projects for a Pinout and user guide or consult the Zip you got this code from
+ 
+*/
+ 
+ 
+//************************* User Defined Variables ********************************************************//
+ 
+
+
+//************ Temp Probe Related *********************************************//
+
+//Thermometer with thermistor
+
+/*thermistor parameters:
+ * RT0: 10 000 Ω
+ * B: 3950 K +- 1.00%
+ * T0:  25 C
+ * +- 2%
+ */
+
+//These values are in the datasheet
+#define RT0 10000   // Ω
+#define B 3950      // K
+//--------------------------------------
+
+
+#define VCC 5    //Supply voltage
+#define R 10000  //R=10KΩ
+
+//Variables
+float RT1, RT2, VR1, VR2, ln, TX, TX1, TX2, T0, VRT1, VRT2;
+ 
+//##################################################################################
+//-----------  Do not Replace R1 with a resistor lower than 300 ohms    ------------
+//##################################################################################
+// Setup EC Meter 
+ 
+int R1= 1000;
+int Ra=25; //Resistance of powering Pins
+int ECPin= A2;
+int ECGround=A4;
+int ECPower =A3;
+ 
+ 
+//*********** Converting to ppm [Learn to use EC it is much better**************//
+// Hana      [USA]        PPMconverion:  0.5
+// Eutech    [EU]          PPMconversion:  0.64
+//Tranchen  [Australia]  PPMconversion:  0.7
+// Why didnt anyone standardise this?
+ 
+ 
+float PPMconversion=0.64;
+ 
+ 
+//*************Compensating for temperature ************************************//
+//The value below will change depending on what chemical solution we are measuring
+//0.019 is generaly considered the standard for plant nutrients [google "Temperature compensation EC" for more info
+float TemperatureCoef = 0.019; //this changes depending on what chemical we are measuring
+ 
+ 
+ 
+ 
+//********************** Cell Constant For Ec Measurements *********************//
+//Mine was around 2.9 with plugs being a standard size they should all be around the same
+//But If you get bad readings you can use the calibration script and fluid to get a better estimate for K
+float K=2.88;
+ 
+ 
+ 
+ 
+
+ 
+//***************************** END Of Recomended User Inputs *****************************************************************//
+ 
+ 
+float AirTemperature=10;
+float WaterTemperature=10;
+float EC=0;
+float EC25 =0;
+int ppm =0;
+ 
+ 
+float raw= 0;
+float Vin= 5;
+float Vdrop= 0;
+float Rc= 0;
+float buffer=0;
+ 
+ 
+// SETUP, RUNS ONCE
+
+void setup() {
+  // initialize serial communication at 9600 bits per second:
+  Serial.begin(9600);
+  // initialize the pushbutton pin as an input:
+  pinMode(buttonKP, INPUT);
+
+  // initialize Relais 1-4 as Output
+
+  pinMode(PumpeA_Relais1, OUTPUT);
+  pinMode(PumpeK_Relais2, OUTPUT);
+  pinMode(LichtA_Relais3, OUTPUT);
+  pinMode(HeizstabA_Relais4, OUTPUT);
+  delay(500);        // delay in between reads for stability
+
+  // set Relays to 0
+  digitalWrite(PumpeA_Relais1, LOW);
+  digitalWrite(PumpeK_Relais2, LOW);
+  digitalWrite(LichtA_Relais3, LOW);
+  digitalWrite(HeizstabA_Relais4, LOW);
+  delay(500);        // delay in between reads for stability
+
+  // set Relays to standard
+  digitalWrite(PumpeA_Relais1, HIGH);
+  digitalWrite(PumpeK_Relais2, LOW);
+  digitalWrite(LichtA_Relais3, HIGH);
+  digitalWrite(HeizstabA_Relais4, HIGH);
+
+  delay(500);        // delay in between reads for stability
+
+  // Water and Airtemp Thermistors and EC Meter
+  T0 = 25 + 273.15;                 //Temperature T0 from datasheet, conversion from Celsius to kelvin
+   VRT1 = analogRead(A0);              //Acquisition analog value of VRT
+                                             // Data wire For Temp Probe is plugged into pin A0 on the ArduinoVRT2 = analogRead(A1);              //Acquisition analog value of VRT
+                                             // Data wire For Temp Probe is plugged into pin A0 on the Arduino
+
+ 
+  pinMode(ECPin,INPUT);
+  pinMode(ECPower,OUTPUT);//Setting pin for sourcing current
+  pinMode(ECGround,OUTPUT);//setting pin for sinking current
+  digitalWrite(ECGround,LOW);//We can leave the ground connected permanantly
+ 
+}
+
+// MAIN LOOP
+void loop() {
+  // put your main code here, to run repeatedly:
+
+  WateringPlants();
+  delay(100);
+};
+
+// SUB ROUTINES
+//Moved Heavy Work To subroutines so you can call them from main loop without cluttering the main loop
+
+// WATERING PLANTS
+void WateringPlants() {
+  buttonStateKP = digitalRead(buttonKP);
+  if (buttonStateKP == HIGH ) {
+    // turn PumpeK_Relais2 ON, Watering Plants
+    digitalWrite(PumpeA_Relais1, LOW);
+    digitalWrite(PumpeK_Relais2, HIGH);
+    delay(WateringTime);        // Time Watering
+    digitalWrite(PumpeK_Relais2, LOW);
+    delay(FlowbackTime);        // delay in between reads for stability
+    digitalWrite(PumpeA_Relais1, HIGH);
+
+    }  
+    else {
+    digitalWrite(PumpeK_Relais2, LOW);
+    digitalWrite(PumpeA_Relais1, HIGH);
+   
+  };
+//************************************* Main Loop - Runs Forever ***************************************************************//
+
+
+DisplayTEMP(); // Code Calls 10x with 2 sec delay for Air and Water Temperature
+GetEC();          //Calls Code to Go into GetEC() Loop [Below Main Loop] dont call this more that 1/5 hhz [once every five seconds] or you will polarise the water
+PrintReadings();  // Cals Print routine [below main loop]
+delay(2000);
+ 
+//************************************** End Of Main Loop **********************************************************************//
+ 
+ 
+ 
+ 
+//************ This Loop Is called From Main Loop************************//
+//*********Reading Temperature Of Solution *******************//
+void GetWaterTEMP(){
+VRT1 = analogRead(A0);              //Acquisition analog value of VRT
+  VRT1 = (5.00 / 1023.00) * VRT1;      //Conversion to voltage
+  VR1 = VCC - VRT1;
+  RT1 = VRT1 / (VR1 / R);               //Resistance of RT
+
+  ln = log(RT1 / RT0);
+  TX1 = (1 / ((ln / B) + (1 / T0))); //Temperature from thermistor
+
+  TX1 = TX1 - 273.15;                 //Conversion to Celsius
+  WaterTemperature = TX1;
+Serial.print("Water Temperature: ");
+Serial.print(WaterTemperature);
+Serial.print(" °C     ");
+}; 
+//*********Reading Air Temperature  *******************//
+void GetAirTEMP(){
+VRT2 = analogRead(A1);              //Acquisition analog value of VRT
+  VRT2 = (5.00 / 1023.00) * VRT2;      //Conversion to voltage
+  VR2 = VCC - VRT2;
+  RT2 = VRT2 / (VR2 / R);               //Resistance of RT
+
+  ln = log(RT2 / RT0);
+  TX2 = (1 / ((ln / B) + (1 / T0))); //Temperature from thermistor
+
+  TX2 = TX2 - 273.15;                 //Conversion to Celsius
+  AirTemperature = TX2;
+Serial.print("Air Temperature: ");
+Serial.print(AirTemperature);
+Serial.println(" °C ");
+}; 
+//*********Looping Temperatures  *******************//
+void DisplayTEMP(){
+GetWaterTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+GetAirTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+ delay(2000);
+ GetWaterTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+GetAirTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+ delay(2000);
+ GetWaterTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+GetAirTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+ delay(2000);
+ GetWaterTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+GetAirTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+ delay(2000);
+ GetWaterTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+GetAirTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+ delay(2000);
+ GetWaterTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+GetAirTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+ delay(2000);
+ GetWaterTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+GetAirTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+ delay(2000);
+ GetWaterTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+GetAirTEMP(); // Calls Code to get Temperature reading from Thermistor on Pin A0
+ delay(2000);
+
+ 
+}
+
+//*********Reading EC Of Solution *******************//
+
+void GetEC(){
+
+ 
+//************Estimates Resistance of Liquid ****************//
+digitalWrite(ECPower,HIGH);
+raw= analogRead(ECPin);
+raw= analogRead(ECPin);// This is not a mistake, First reading will be low beause if charged a capacitor
+digitalWrite(ECPower,LOW);
+ 
+
+ 
+ 
+//***************** Converts to EC **************************//
+Vdrop= (Vin*raw)/1024.0;
+Rc=(Vdrop*R1)/(Vin-Vdrop);
+Rc=Rc-Ra; //acounting for Digital Pin Resitance
+EC = 1000/(Rc*K);
+ 
+ 
+//*************Compensating For Temperaure********************//
+EC25  =  EC/ (1+ TemperatureCoef*(WaterTemperature-25.0));
+ppm=(EC25)*(PPMconversion*1000);
+ 
+ 
+;}
+//************************** End OF EC Function ***************************//
+ 
+ 
+ 
+ 
+//***This Loop Is called From Main Loop- Prints to serial usefull info ***//
+void PrintReadings(){
+Serial.print("Rc: ");
+Serial.print(Rc);
+Serial.print(" EC: ");
+Serial.print(EC25);
+Serial.print(" Simens  ");
+Serial.print(ppm);
+Serial.print(" ppm  ");
+Serial.print(WaterTemperature);
+Serial.println(" *C ");
+ 
+ 
+/*
+//********** Usued for Debugging ************
+Serial.print("Vdrop: ");
+Serial.println(Vdrop);
+Serial.print("Rc: ");
+Serial.println(Rc);
+Serial.print(EC);
+Serial.println("Siemens");
+//********** end of Debugging Prints *********
+*/
+};
+
